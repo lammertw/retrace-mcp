@@ -187,7 +187,7 @@ server.tool(
           text:
             projects.length === 0
               ? "No projects logged yet."
-              : projects.join("\n"),
+              : projects.map(p => `- ${p.name}${p.description ? `: ${p.description}` : ""} (created ${p.created_at})`).join("\n"),
         },
       ],
     };

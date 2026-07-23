@@ -1,4 +1,4 @@
-import { JournalEntry } from "./db.js";
+import { JournalEntry, Project } from "./db.js";
 
 export interface JournalBackend {
   logEntry(params: {
@@ -34,7 +34,7 @@ export interface JournalBackend {
     entries: JournalEntry[];
   }>;
 
-  listProjects(): Promise<string[]>;
+  listProjects(): Promise<Project[]>;
 
   deleteEntry(id: number): Promise<boolean>;
 }

@@ -16,6 +16,13 @@ export interface JournalEntry {
   component: string | null;
 }
 
+export interface Project {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
 export class JournalDB {
   private db: Database.Database;
 
@@ -48,11 +55,17 @@ export class JournalDB {
     if (version < 1) {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS entries (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp TEXT NOT NULL DEFAULT (datetime('now')),
           category TEXT NOT NULL DEFAULT 'general',
-          project TEXT,
+          project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
           content TEXT NOT NULL,
           tags TEXT,
           source TEXT NOT NULL DEFAULT 'manual',
@@ -62,7 +75,7 @@ export class JournalDB {
         );
         CREATE INDEX IF NOT EXISTS idx_entries_timestamp ON entries(timestamp);
         CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
-        CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project);
+        CREATE INDEX IF NOT EXISTS idx_entries_project_id ON entries(project_id);
         CREATE INDEX IF NOT EXISTS idx_entries_component ON entries(component);
       `);
 
@@ -93,6 +106,35 @@ export class JournalDB {
     }
   }
 
+  private resolveProjectId(projectName?: string): number | null {
+    if (!projectName) return null;
+    const existing = this.db.prepare("SELECT id FROM projects WHERE name = ?").get(projectName) as { id: number } | undefined;
+    if (existing) return existing.id;
+    const info = this.db.prepare("INSERT INTO projects (name) VALUES (?)").run(projectName);
+    return info.lastInsertRowid as number;
+  }
+
+  private getProjectName(projectId: number | null): string | null {
+    if (!projectId) return null;
+    const row = this.db.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as { name: string } | undefined;
+    return row ? row.name : null;
+  }
+
+  private toJournalEntry(row: { id: number; timestamp: string; category: string; project_id: number | null; content: string; tags: string | null; source: string; people: string | null; refs: string | null; component: string | null }): JournalEntry {
+    return {
+      id: row.id,
+      timestamp: row.timestamp,
+      category: row.category,
+      project: this.getProjectName(row.project_id),
+      content: row.content,
+      tags: row.tags,
+      source: row.source,
+      people: row.people,
+      refs: row.refs,
+      component: row.component,
+    };
+  }
+
   logEntry(params: {
     content: string;
     category?: string;
@@ -104,8 +146,9 @@ export class JournalDB {
     refs?: string[];
     component?: string;
   }): JournalEntry {
+    const projectId = this.resolveProjectId(params.project);
     const stmt = this.db.prepare(`
-      INSERT INTO entries (content, category, project, tags, source, timestamp, people, refs, component)
+      INSERT INTO entries (content, category, project_id, tags, source, timestamp, people, refs, component)
       VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?, ?, ?)
     `);
     const tagsStr = params.tags ? params.tags.join(",") : null;
@@ -114,7 +157,7 @@ export class JournalDB {
     const info = stmt.run(
       params.content,
       params.category || "general",
-      params.project || null,
+      projectId,
       tagsStr,
       params.source || "agent",
       params.timestamp || null,
@@ -130,9 +173,8 @@ export class JournalDB {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(id, params.content, params.project || "", tagsStr || "", peopleStr || "", refsStr || "", params.component || "");
 
-    return this.db
-      .prepare("SELECT * FROM entries WHERE id = ?")
-      .get(id) as JournalEntry;
+    const row = this.db.prepare("SELECT * FROM entries WHERE id = ?").get(id) as any;
+    return this.toJournalEntry(row);
   }
 
   query(params: {
@@ -161,7 +203,7 @@ export class JournalDB {
       values.push(params.category);
     }
     if (params.project) {
-      conditions.push("project = ?");
+      conditions.push("project_id IN (SELECT id FROM projects WHERE name = ?)");
       values.push(params.project);
     }
     if (params.person) {
@@ -183,30 +225,33 @@ export class JournalDB {
       : "";
     const limit = params.limit || 50;
 
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT * FROM entries ${where} ORDER BY timestamp DESC LIMIT ?`
       )
-      .all(...values, limit) as JournalEntry[];
+      .all(...values, limit) as any[];
+    return rows.map(r => this.toJournalEntry(r));
   }
 
   semanticSearch(query: string, limit?: number): JournalEntry[] {
     const ftsQuery = query.replace(/['"]/g, "").split(/\s+/).map(w => `"${w}"*`).join(" OR ");
     const maxResults = limit || 20;
     try {
-      return this.db.prepare(`
+      const rows = this.db.prepare(`
         SELECT e.* FROM entries e
         JOIN entries_fts fts ON e.id = fts.rowid
         WHERE entries_fts MATCH ?
         ORDER BY fts.rank
         LIMIT ?
-      `).all(ftsQuery, maxResults) as JournalEntry[];
+      `).all(ftsQuery, maxResults) as any[];
+      return rows.map(r => this.toJournalEntry(r));
     } catch {
-      return this.db.prepare(`
+      const rows = this.db.prepare(`
         SELECT * FROM entries
-        WHERE content LIKE ? OR people LIKE ? OR refs LIKE ? OR component LIKE ? OR project LIKE ?
+        WHERE content LIKE ? OR people LIKE ? OR refs LIKE ? OR component LIKE ? OR project_id IN (SELECT id FROM projects WHERE name LIKE ?)
         ORDER BY timestamp DESC LIMIT ?
-      `).all(`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, maxResults) as JournalEntry[];
+      `).all(`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, maxResults) as any[];
+      return rows.map(r => this.toJournalEntry(r));
     }
   }
 
@@ -256,11 +301,12 @@ export class JournalDB {
   }
 
   getSummary(date: string): { categories: Record<string, number>; projects: Record<string, number>; entries: JournalEntry[] } {
-    const entries = this.db
+    const rows = this.db
       .prepare(
         `SELECT * FROM entries WHERE date(timestamp) = date(?) ORDER BY timestamp ASC`
       )
-      .all(date) as JournalEntry[];
+      .all(date) as any[];
+    const entries = rows.map(r => this.toJournalEntry(r));
 
     const categories: Record<string, number> = {};
     const projects: Record<string, number> = {};
@@ -273,11 +319,10 @@ export class JournalDB {
     return { categories, projects, entries };
   }
 
-  listProjects(): string[] {
-    const rows = this.db
-      .prepare("SELECT DISTINCT project FROM entries WHERE project IS NOT NULL ORDER BY project")
-      .all() as { project: string }[];
-    return rows.map((r) => r.project);
+  listProjects(): Project[] {
+    return this.db
+      .prepare("SELECT * FROM projects ORDER BY name")
+      .all() as Project[];
   }
 
   deleteEntry(id: number): boolean {

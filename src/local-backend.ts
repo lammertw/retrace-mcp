@@ -1,4 +1,4 @@
-import { JournalDB, JournalEntry } from "./db.js";
+import { JournalDB, JournalEntry, Project } from "./db.js";
 import { JournalBackend } from "./backend.js";
 
 export class LocalBackend implements JournalBackend {
@@ -51,7 +51,7 @@ export class LocalBackend implements JournalBackend {
     return this.db.getSummary(date);
   }
 
-  async listProjects(): Promise<string[]> {
+  async listProjects(): Promise<Project[]> {
     return this.db.listProjects();
   }
 

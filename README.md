@@ -9,19 +9,9 @@ Query your work history months later:
 - "Who worked on the payment integration?"
 - "Give me a standup summary for yesterday"
 
-## Install
+## Setup
 
-```bash
-npm install -g retrace-mcp
-```
-
-Or run directly:
-
-```bash
-npx retrace-mcp
-```
-
-## Configure your MCP client
+No install needed — just add Retrace to your MCP client config. It downloads automatically on first run.
 
 ### Claude Desktop
 
@@ -68,9 +58,13 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
+That's it. Start a coding session and Retrace will automatically begin logging your work.
+
+> **Optional:** If you prefer a permanent install, run `npm install -g retrace-mcp`.
+
 ## How it works
 
-1. **Install** — one command, no account needed
+1. **Add the config** — paste the snippet above, no account needed
 2. **Code normally** — your AI agent automatically logs meaningful work entries
 3. **Query anytime** — ask about past work, get perfect standups, find who knows what
 

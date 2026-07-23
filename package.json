@@ -1,6 +1,6 @@
 {
   "name": "retrace-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI work journal — automatic memory for coding agents. Local SQLite, zero config.",
   "keywords": [
     "mcp",

@@ -50,9 +50,10 @@ export class JournalDB {
   }
 
   private migrate(): void {
-    const version = this.getSchemaVersion();
+    let version = this.getSchemaVersion();
 
     if (version < 1) {
+      // Fresh install: create latest schema directly
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS projects (
@@ -87,7 +88,35 @@ export class JournalDB {
         );
       `);
 
-      this.setSchemaVersion(1);
+      this.setSchemaVersion(2);
+      version = 2;
+    }
+
+    if (version < 2) {
+      // v1.0.0 migration: entries had 'project' TEXT column, no projects table.
+      // Add projects table and project_id FK.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      this.db.exec(`
+        INSERT OR IGNORE INTO projects (name)
+        SELECT DISTINCT project FROM entries WHERE project IS NOT NULL AND project != '';
+      `);
+
+      const columns = this.db.pragma("table_info(entries)") as { name: string }[];
+      const hasProjectId = columns.some((c) => c.name === "project_id");
+      if (!hasProjectId) {
+        this.db.exec(`ALTER TABLE entries ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
+        this.db.exec(`UPDATE entries SET project_id = (SELECT id FROM projects WHERE name = entries.project) WHERE project IS NOT NULL`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_project_id ON entries(project_id)`);
+      }
+
+      this.setSchemaVersion(2);
     }
 
     this.rebuildFtsIfNeeded();
@@ -100,8 +129,8 @@ export class JournalDB {
       this.db.exec("DELETE FROM entries_fts");
       this.db.exec(`
         INSERT INTO entries_fts (rowid, content, project, tags, people, refs, component)
-        SELECT id, content, COALESCE(project, ''), COALESCE(tags, ''), COALESCE(people, ''), COALESCE(refs, ''), COALESCE(component, '')
-        FROM entries
+        SELECT e.id, e.content, COALESCE(p.name, ''), COALESCE(e.tags, ''), COALESCE(e.people, ''), COALESCE(e.refs, ''), COALESCE(e.component, '')
+        FROM entries e LEFT JOIN projects p ON e.project_id = p.id
       `);
     }
   }
@@ -269,9 +298,10 @@ export class JournalDB {
       return this.aggregatePeople(entries, maxResults);
     } catch {
       const entries = this.db.prepare(`
-        SELECT people, content, timestamp FROM entries
-        WHERE (content LIKE ? OR component LIKE ? OR project LIKE ?) AND people IS NOT NULL AND people != ''
-        ORDER BY timestamp DESC LIMIT 200
+        SELECT e.people, e.content, e.timestamp FROM entries e
+        LEFT JOIN projects p ON e.project_id = p.id
+        WHERE (e.content LIKE ? OR e.component LIKE ? OR p.name LIKE ?) AND e.people IS NOT NULL AND e.people != ''
+        ORDER BY e.timestamp DESC LIMIT 200
       `).all(`%${topic}%`, `%${topic}%`, `%${topic}%`) as { people: string; content: string; timestamp: string }[];
       return this.aggregatePeople(entries, maxResults);
     }
